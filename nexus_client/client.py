@@ -84,11 +84,8 @@ class NexusClient:
         try:
             async with aiohttp.ClientSession() as http:
                 resp = await http.get(
-                    f"{self._vk_url}/verify",
-                    headers={
-                        "Cookie": f"vk_session={session_cookie}",
-                        "Accept": "application/json",
-                    },
+                    f"{self._vk_url}/whoami",
+                    headers={"Cookie": f"vk_session={session_cookie}"},
                 )
                 if resp.status == 200:
                     data = await resp.json()
