@@ -5,7 +5,6 @@ from typing import Any, Callable
 
 import aiohttp
 import paho.mqtt.client as mqtt
-import paho.mqtt.publish as mqttpublish
 
 logger = logging.getLogger(__name__)
 
@@ -97,26 +96,36 @@ class NexusClient:
     # ── Publish ───────────────────────────────────────────────────────────────
 
     async def publish(self, topic: str, payload: Any, retain: bool = False) -> None:
-        """Publie un message sur un topic MQTT (connexion one-shot).
+        """Publie un message sur un topic MQTT.
+
+        Utilise la connexion persistante _paho si disponible (start_listening appelé),
+        sinon ouvre une connexion one-shot. Cela évite l'overhead TCP/auth sur chaque
+        publish pendant la génération de bulletins ou sous forte charge.
 
         retain=True : Mosquitto conserve le dernier message — tout nouvel abonné
         le reçoit immédiatement, utile pour les manifestes de service.
         """
         if isinstance(payload, (dict, list)):
             payload = json.dumps(payload)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: mqttpublish.single(
-                topic=topic,
-                payload=payload,
-                hostname=self._mqtt_host,
-                port=self._mqtt_port,
-                auth={"username": self._username, "password": self._password},
-                retain=retain,
-            ),
-        )
-        logger.debug(f"MQTT publié sur {topic} (retain={retain})")
+        if self._paho and self._paho.is_connected():
+            self._paho.publish(topic, payload, retain=retain)
+            logger.debug(f"MQTT publié sur {topic} via connexion persistante (retain={retain})")
+        else:
+            # Fallback one-shot si pas de connexion persistante
+            import paho.mqtt.publish as mqttpublish
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: mqttpublish.single(
+                    topic=topic,
+                    payload=payload,
+                    hostname=self._mqtt_host,
+                    port=self._mqtt_port,
+                    auth={"username": self._username, "password": self._password},
+                    retain=retain,
+                ),
+            )
+            logger.debug(f"MQTT publié sur {topic} via connexion one-shot (retain={retain})")
 
     # ── Subscribe ─────────────────────────────────────────────────────────────
 
