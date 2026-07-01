@@ -123,6 +123,7 @@ class NexusClient:
                     port=self._mqtt_port,
                     auth={"username": self._username, "password": self._password},
                     retain=retain,
+                    qos=1,
                 ),
             )
             logger.debug(f"MQTT publié sur {topic} via connexion one-shot (retain={retain})")
