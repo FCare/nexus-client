@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any, Callable
 
 import aiohttp
@@ -129,6 +130,42 @@ class NexusClient:
             logger.debug(f"MQTT publié sur {topic} via connexion one-shot (retain={retain})")
 
     # ── Subscribe ─────────────────────────────────────────────────────────────
+
+    async def request(self, topic: str, payload: Any, timeout: float = 30.0) -> Any | None:
+        """Publie une requête et attend la réponse sur un topic reply/{uuid} éphémère.
+
+        Injecte automatiquement reply_to dans le payload. Retourne le payload de la réponse,
+        ou None si timeout.
+        """
+        cid = str(uuid.uuid4())
+        reply_topic = f"reply/{cid}"
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+
+        async def _on_reply(_t: str, p: Any) -> None:
+            if not future.done():
+                future.set_result(p)
+
+        self.subscribe(reply_topic, _on_reply)
+
+        req_payload = {**(payload if isinstance(payload, dict) else {}), "reply_to": reply_topic}
+        if not isinstance(payload, dict):
+            req_payload["_payload"] = payload
+
+        await self.publish(topic, req_payload)
+
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self.unsubscribe(reply_topic)
+
+    def unsubscribe(self, topic: str) -> None:
+        """Se désabonne d'un topic."""
+        self._subscriptions.pop(topic, None)
+        if self._paho and self._paho.is_connected():
+            self._paho.unsubscribe(topic)
 
     def subscribe(self, topic: str, callback: Callable) -> None:
         """Enregistre un callback pour un topic (wildcards # et + supportés).
