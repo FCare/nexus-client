@@ -192,7 +192,11 @@ class NexusClient:
         except Exception:
             payload = msg.payload.decode()
 
-        for pattern, callbacks in self._subscriptions.items():
+        # Snapshot: _on_message tourne sur le thread réseau paho pendant que
+        # subscribe() peut muter _subscriptions depuis la boucle asyncio —
+        # itérer directement dessus a déjà crashé le thread avec
+        # "RuntimeError: dictionary changed size during iteration".
+        for pattern, callbacks in list(self._subscriptions.items()):
             if mqtt.topic_matches_sub(pattern, topic):
                 for cb in callbacks:
                     if asyncio.iscoroutinefunction(cb) and self._loop:
