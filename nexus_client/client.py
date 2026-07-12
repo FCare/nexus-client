@@ -205,7 +205,19 @@ class NexusClient:
                         cb(topic, payload)
 
     def start_listening(self) -> None:
-        """Démarre la boucle MQTT dans un thread séparé (non bloquant)."""
+        """Démarre la boucle MQTT dans un thread séparé (non bloquant).
+
+        Idempotent : si un client paho est déjà connecté (ex: nexus_client partagé entre
+        plusieurs sessions d'un même utilisateur, chacune appelant start_listening() à son
+        tour), ne pas en recréer un second. Sans cette garde, chaque appel supplémentaire
+        ouvrait une connexion MQTT de plus, toutes abonnées aux mêmes topics (subscribe()
+        s'appuie sur le même client déjà connecté) — un message publié une seule fois était
+        alors livré une fois par connexion vivante, déclenchant le callback en double, triple,
+        etc. au fil des sessions, avec des résultats non déterministes à chaque doublon.
+        """
+        if self._paho and self._paho.is_connected():
+            logger.debug(f"MQTT déjà connecté: {self._username}@{self._mqtt_host}:{self._mqtt_port}, skip")
+            return
         self._loop = asyncio.get_event_loop()
         self._paho = mqtt.Client()
         self._paho.username_pw_set(self._username, self._password)
