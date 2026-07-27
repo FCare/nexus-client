@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from typing import Any, Callable
 
@@ -11,24 +12,30 @@ logger = logging.getLogger(__name__)
 
 
 class NexusClient:
-    """Client MQTT authentifié via Voight-Kampff.
+    """Client MQTT authentifié via Voight-Kampff ou Authentik OAuth.
 
-    Le mot de passe MQTT est soit une API key VK, soit un cookie de session VK.
-    Voight-Kampff valide les deux formes via /mqtt/user.
+    Le mot de passe MQTT est soit une API key VK, soit un cookie de session VK,
+    soit un access token OAuth Authentik.
 
-    Usage avec cookie de session (navigateur) :
+    Usage avec cookie de session VK (navigateur) :
         client = await NexusClient.from_session_cookie(vk_url, mqtt_host, cookie)
         await client.publish("common/foo", {"hello": "world"})
 
-    Usage avec API key (service) :
+    Usage avec API key VK (service) :
         client = NexusClient.from_api_key(vk_url, mqtt_host, username, api_key)
         client.subscribe("common/#", my_callback)
         async with client:
             await asyncio.sleep(...)
+
+    Usage avec Authentik OAuth token (navigateur ou service) :
+        client = await NexusClient.from_authentik_token(
+            authentik_url, mqtt_host, access_token, client_id, client_secret
+        )
+        await client.publish("common/foo", {"hello": "world"})
     """
 
-    def __init__(self, vk_url: str, mqtt_host: str, mqtt_port: int = 1883):
-        self._vk_url = vk_url.rstrip("/")
+    def __init__(self, auth_url: str, mqtt_host: str, mqtt_port: int = 1883):
+        self._auth_url = auth_url.rstrip("/")
         self._mqtt_host = mqtt_host
         self._mqtt_port = mqtt_port
         self._username: str | None = None
@@ -68,6 +75,34 @@ class NexusClient:
         instance._password = api_key
         return instance
 
+    @classmethod
+    async def from_authentik_token(
+        cls,
+        authentik_url: str,
+        mqtt_host: str,
+        access_token: str,
+        client_id: str,
+        client_secret: str,
+        mqtt_port: int = 1883,
+    ) -> "NexusClient":
+        """Résout le username via Authentik OAuth introspection et prépare le client
+        avec le token comme mot de passe MQTT.
+
+        Args:
+            authentik_url: URL de base Authentik (ex: https://sso.caronboulme.fr)
+            mqtt_host: Hostname du broker MQTT
+            access_token: Access token OAuth obtenu après authentification
+            client_id: Client ID OAuth de l'application (pour l'introspection)
+            client_secret: Client secret OAuth de l'application
+            mqtt_port: Port MQTT (défaut 1883)
+        """
+        instance = cls(authentik_url, mqtt_host, mqtt_port)
+        instance._password = access_token
+        instance._username = await instance._resolve_username_authentik(
+            access_token, client_id, client_secret
+        )
+        return instance
+
     # ── Propriétés ────────────────────────────────────────────────────────────
 
     @property
@@ -84,7 +119,7 @@ class NexusClient:
         try:
             async with aiohttp.ClientSession() as http:
                 resp = await http.get(
-                    f"{self._vk_url}/whoami",
+                    f"{self._auth_url}/whoami",
                     headers={"Cookie": f"vk_session={session_cookie}"},
                 )
                 if resp.status == 200:
@@ -92,6 +127,49 @@ class NexusClient:
                     return data.get("user", "anonymous")
         except Exception as e:
             logger.warning(f"Résolution username VK échouée: {e}")
+        return "anonymous"
+
+    # ── Auth Authentik ────────────────────────────────────────────────────────
+
+    async def _resolve_username_authentik(
+        self, access_token: str, client_id: str, client_secret: str
+    ) -> str:
+        """Résout le username via OAuth introspection Authentik.
+
+        Appelle l'endpoint /application/o/introspect/ pour vérifier le token
+        et récupérer le username associé.
+
+        Pour les tokens Client Credentials (machine-to-machine), utilise
+        le client_id comme username par défaut.
+        """
+        try:
+            async with aiohttp.ClientSession() as http:
+                resp = await http.post(
+                    f"{self._auth_url}/application/o/introspect/",
+                    data={
+                        "token": access_token,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                    },
+                )
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("active"):
+                        # Tokens utilisateur ont un username
+                        username = data.get("username")
+                        if username:
+                            logger.info(f"Résolution username Authentik OK: {username}")
+                            return username
+                        # Tokens Client Credentials : utiliser client_id
+                        token_client_id = data.get("client_id")
+                        if token_client_id:
+                            logger.info(f"Token Client Credentials Authentik OK: {token_client_id}")
+                            return token_client_id
+                    logger.warning(f"Token Authentik inactif ou invalide")
+                else:
+                    logger.warning(f"Introspection Authentik échec HTTP {resp.status}")
+        except Exception as e:
+            logger.warning(f"Résolution username Authentik échouée: {e}")
         return "anonymous"
 
     # ── Publish ───────────────────────────────────────────────────────────────
