@@ -12,20 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class NexusClient:
-    """Client MQTT authentifié via Voight-Kampff ou Authentik OAuth.
+    """Client MQTT authentifié via Authentik OAuth.
 
-    Le mot de passe MQTT est soit une API key VK, soit un cookie de session VK,
-    soit un access token OAuth Authentik.
-
-    Usage avec cookie de session VK (navigateur) :
-        client = await NexusClient.from_session_cookie(vk_url, mqtt_host, cookie)
-        await client.publish("common/foo", {"hello": "world"})
-
-    Usage avec API key VK (service) :
-        client = NexusClient.from_api_key(vk_url, mqtt_host, username, api_key)
-        client.subscribe("common/#", my_callback)
-        async with client:
-            await asyncio.sleep(...)
+    Le mot de passe MQTT est un access token OAuth Authentik.
 
     Usage avec Authentik OAuth token (navigateur ou service) :
         client = await NexusClient.from_authentik_token(
@@ -45,35 +34,6 @@ class NexusClient:
         self._subscriptions: dict[str, list[Callable]] = {}
 
     # ── Factories ─────────────────────────────────────────────────────────────
-
-    @classmethod
-    async def from_session_cookie(
-        cls,
-        vk_url: str,
-        mqtt_host: str,
-        session_cookie: str,
-        mqtt_port: int = 1883,
-    ) -> "NexusClient":
-        """Résout le username via VK et prépare le client avec le cookie comme mot de passe."""
-        instance = cls(vk_url, mqtt_host, mqtt_port)
-        instance._password = session_cookie
-        instance._username = await instance._resolve_username(session_cookie)
-        return instance
-
-    @classmethod
-    def from_api_key(
-        cls,
-        vk_url: str,
-        mqtt_host: str,
-        username: str,
-        api_key: str,
-        mqtt_port: int = 1883,
-    ) -> "NexusClient":
-        """Crée le client avec une API key VK comme mot de passe MQTT."""
-        instance = cls(vk_url, mqtt_host, mqtt_port)
-        instance._username = username
-        instance._password = api_key
-        return instance
 
     @classmethod
     async def from_authentik_token(
@@ -112,22 +72,6 @@ class NexusClient:
     @property
     def password(self) -> str | None:
         return self._password
-
-    # ── Auth VK ───────────────────────────────────────────────────────────────
-
-    async def _resolve_username(self, session_cookie: str) -> str:
-        try:
-            async with aiohttp.ClientSession() as http:
-                resp = await http.get(
-                    f"{self._auth_url}/whoami",
-                    headers={"Cookie": f"vk_session={session_cookie}"},
-                )
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("user", "anonymous")
-        except Exception as e:
-            logger.warning(f"Résolution username VK échouée: {e}")
-        return "anonymous"
 
     # ── Auth Authentik ────────────────────────────────────────────────────────
 
